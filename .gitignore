@@ -3,3 +3,6 @@
 __pycache__/
 *.pyc
 jetson/snapshots/
+
+# JetBot 道路跟隨：資料集與模型權重（太大，本地 + Jetson 上保存，不進 git）
+jetson/road_following/data/
