@@ -16,15 +16,26 @@ const char* AP_SSID = "ESP32-Car";
 const char* AP_PASS = "12345678";
 
 // 馬達腳位
-const int IN1 = 33, IN2 = 14;   // 左
-const int IN3 = 27, IN4 = 26;   // 右
-const int ENA = 13, ENB = 25;   // PWM
+const int IN1 =16 , IN2 =17 ;   // 左
+const int IN3 =18 , IN4 = 19;   // 右
+const int ENA = 25, ENB = 26;   // PWM
+
+// 依實車校正：+1 表示 setMotor 正方向是車子前進，-1 表示要反相。
+// 目前實測 ▼ 會讓左右輪往前，所以兩側都先反相。
+const int LEFT_FORWARD_SIGN = -1;
+const int RIGHT_FORWARD_SIGN = -1;
 
 // PWM 設定（ESP32 Arduino Core 3.x 新 API）
 const int PWM_FREQ = 1000, PWM_RES = 8;   // 8-bit: 0~255
-int motorSpeed = 200;                      // 預設速度
-
+int motorSpeed = 255;                      // 預設速度
 WebServer server(80);
+unsigned long commandSeq = 0;
+
+const char* motorDirection(int speed) {
+  if (speed > 0) return "forward";
+  if (speed < 0) return "backward";
+  return "stop";
+}
 
 void setMotor(int in1, int in2, int enPin, int speed) {
   int a, b, pwm;
@@ -38,14 +49,41 @@ void setMotor(int in1, int in2, int enPin, int speed) {
   digitalWrite(in1, a);
   digitalWrite(in2, b);
   ledcWrite(enPin, pwm);
-  Serial.printf("  motor IN(%d)=%d IN(%d)=%d EN(%d)=%d\n", in1, a, in2, b, enPin, pwm);
+  Serial.printf("      raw=%4d rawDir=%-8s | IN(%d)=%d IN(%d)=%d EN(%d) PWM=%d\n",
+                speed, motorDirection(speed), in1, a, in2, b, enPin, pwm);
 }
 
-void forward()  { setMotor(IN1,IN2,ENA, motorSpeed); setMotor(IN3,IN4,ENB, motorSpeed); }
-void backward() { setMotor(IN1,IN2,ENA,-motorSpeed); setMotor(IN3,IN4,ENB,-motorSpeed); }
-void turnLeft() { setMotor(IN1,IN2,ENA,-motorSpeed); setMotor(IN3,IN4,ENB, motorSpeed); }
-void turnRight(){ setMotor(IN1,IN2,ENA, motorSpeed); setMotor(IN3,IN4,ENB,-motorSpeed); }
-void stopAll()  { setMotor(IN1,IN2,ENA,0);           setMotor(IN3,IN4,ENB,0); }
+void setWheel(const char* label, int in1, int in2, int enPin, int desiredSpeed, int forwardSign) {
+  int rawSpeed = desiredSpeed * forwardSign;
+  Serial.printf("    %-5s desired=%4d desiredDir=%-8s sign=%2d\n",
+                label, desiredSpeed, motorDirection(desiredSpeed), forwardSign);
+  setMotor(in1, in2, enPin, rawSpeed);
+}
+
+void drive(int leftSpeed, int rightSpeed) {
+  setWheel("LEFT", IN1,IN2,ENA, leftSpeed, LEFT_FORWARD_SIGN);
+  setWheel("RIGHT",IN3,IN4,ENB, rightSpeed, RIGHT_FORWARD_SIGN);
+}
+
+void forward()        { drive( motorSpeed,  motorSpeed); }
+void backward()       { drive(-motorSpeed, -motorSpeed); }
+void turnLeft()       { drive(-motorSpeed,  motorSpeed); }
+void turnRight()      { drive( motorSpeed, -motorSpeed); }
+void testLeftBack()   { drive(-motorSpeed, 0); }
+void testRightBack()  { drive(0, -motorSpeed); }
+void testLeftFront()  { drive( motorSpeed, 0); }
+void testRightFront() { drive(0,  motorSpeed); }
+void stopAll()        { drive(0, 0); }
+
+void rawRightForward() {
+  setMotor(IN1,IN2,ENA,0);
+  setMotor(IN3,IN4,ENB, motorSpeed);
+}
+
+void rawRightBackward() {
+  setMotor(IN1,IN2,ENA,0);
+  setMotor(IN3,IN4,ENB,-motorSpeed);
+}
 
 const char PAGE[] PROGMEM = R"HTML(
 <!DOCTYPE html><html><head><meta charset="utf-8">
@@ -101,18 +139,27 @@ void handleRoot() { server.send_P(200, "text/html", PAGE); }
 void handleMove() {
   String c = server.arg("c");
   IPAddress ip = server.client().remoteIP();
-  Serial.printf("[%lums] <- HTTP /m?c=%s from %s  speed=%d heap=%u\n",
-                millis(), c.c_str(), ip.toString().c_str(), motorSpeed, ESP.getFreeHeap());
-  if      (c=="F") { Serial.println("  → forward()");  forward();  }
-  else if (c=="B") { Serial.println("  → backward()"); backward(); }
-  else if (c=="L") { Serial.println("  → turnLeft()"); turnLeft(); }
-  else if (c=="R") { Serial.println("  → turnRight()");turnRight();}
-  else             { Serial.println("  → stopAll()");  stopAll();  }
+  commandSeq++;
+  Serial.printf("[%lums] #%lu <- HTTP /m?c=%s from %s | speed=%d heap=%u\n",
+                millis(), commandSeq, c.c_str(), ip.toString().c_str(), motorSpeed, ESP.getFreeHeap());
+  if      (c=="F")   { Serial.println("  action=forward");            forward();  }
+  else if (c=="B")   { Serial.println("  action=backward");           backward(); }
+  else if (c=="L")   { Serial.println("  action=turnLeft");           turnLeft(); }
+  else if (c=="R")   { Serial.println("  action=turnRight");          turnRight();}
+  else if (c=="LB")  { Serial.println("  action=testLeftBack");       testLeftBack();  }
+  else if (c=="RB")  { Serial.println("  action=testRightBack");      testRightBack(); }
+  else if (c=="LF")  { Serial.println("  action=testLeftFront");      testLeftFront(); }
+  else if (c=="RF")  { Serial.println("  action=testRightFront");     testRightFront();}
+  else if (c=="RRAWF"){ Serial.println("  action=rawRightForward");    rawRightForward();}
+  else if (c=="RRAWB"){ Serial.println("  action=rawRightBackward");   rawRightBackward();}
+  else               { Serial.println("  action=stopAll");            stopAll();  }
   server.send(200, "text/plain", "ok");
 }
 
 void handleSpeed() {
-  motorSpeed = server.arg("v").toInt();
+  int oldSpeed = motorSpeed;
+  motorSpeed = constrain(server.arg("v").toInt(), 0, 255);
+  Serial.printf("[%lums] speed change %d -> %d\n", millis(), oldSpeed, motorSpeed);
   server.send(200, "text/plain", "ok");
 }
 
